@@ -1,39 +1,37 @@
+// app/api/pastes/[id]/route.js
 import redis from "../../../../lib/redis";
-import { nowMs } from "../../../../lib/time";
 
 export async function GET(req, { params }) {
-  const { id } = await params;
+  const { id } = params; // get the paste ID from URL
   const key = `paste:${id}`;
 
-  const paste = await redis.hGetAll(key);
-
-  if (!paste || !paste.content) {
+  // Fetch paste from Redis
+  const raw = await redis.get(key);
+  if (!raw) {
     return Response.json({ error: "Not found" }, { status: 404 });
   }
 
-  const now = nowMs(req);
+  // Ensure we parse only if it's a string
+  const paste = typeof raw === "string" ? JSON.parse(raw) : raw;
 
   // TTL check
-  if (paste.expires_at && Number(paste.expires_at) <= now) {
+  if (paste.ttl_seconds && Date.now() > paste.created_at + paste.ttl_seconds * 1000) {
     await redis.del(key);
     return Response.json({ error: "Expired" }, { status: 404 });
   }
 
-  // View limit check
-  if (paste.remaining_views !== "") {
-    const remaining = Number(paste.remaining_views);
-
-    if (remaining <= 0) {
-      return Response.json({ error: "View limit exceeded" }, { status: 404 });
-    }
-
-    await redis.hIncrBy(key, "remaining_views", -1);
+  // Max views check
+  if (paste.max_views !== null && paste.views >= paste.max_views) {
+    return Response.json({ error: "View limit exceeded" }, { status: 404 });
   }
 
-  return Response.json({
-    content: paste.content,
-    remaining_views:
-      paste.remaining_views === "" ? null : Number(paste.remaining_views) - 1,
-    expires_at: paste.expires_at || null,
-  });
+  // Increment view count
+  if (paste.max_views !== null) {
+    paste.views += 1;
+    await redis.set(key, JSON.stringify(paste));
+  }
+
+  return Response.json({ content: paste.content, views: paste.views });
 }
+
+
